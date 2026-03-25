@@ -33,6 +33,7 @@ import hu.bme.aut.arobjectdetection.java.ml.render.LabelRender
 import hu.bme.aut.arobjectdetection.java.ml.render.PointCloudRender
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.NotYetAvailableException
+import com.google.ar.core.exceptions.SessionPausedException
 import java.util.Collections
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,8 +47,6 @@ class AppRenderer(val activity: MainActivity) : DefaultLifecycleObserver, Sample
   companion object {
     val TAG = "HelloArRenderer"
   }
-
-  lateinit var view: MainActivityView
 
   val displayRotationHelper = DisplayRotationHelper(activity)
   lateinit var backgroundRenderer: BackgroundRenderer
@@ -64,30 +63,36 @@ class AppRenderer(val activity: MainActivity) : DefaultLifecycleObserver, Sample
   val mlKitAnalyzer = MLKitObjectDetector(activity)
   var currentAnalyzer: ObjectDetector = mlKitAnalyzer
 
+  private var onScanningStateChanged: ((Boolean) -> Unit)? = null
+  private var onResetEnabledChanged: ((Boolean) -> Unit)? = null
+  private var onSnackbarRequested: ((String) -> Unit)? = null
+
+  fun setCallbacks(
+    onScanningStateChanged: (Boolean) -> Unit,
+    onResetEnabledChanged: (Boolean) -> Unit,
+    onSnackbarRequested: (String) -> Unit
+  ) {
+    this.onScanningStateChanged = onScanningStateChanged
+    this.onResetEnabledChanged = onResetEnabledChanged
+    this.onSnackbarRequested = onSnackbarRequested
+  }
+
+  fun onScanTriggered() {
+    scanButtonWasPressed = true
+    onScanningStateChanged?.invoke(true)
+  }
+
+  fun onResetTriggered() {
+    arLabeledAnchors.clear()
+    onResetEnabledChanged?.invoke(false)
+  }
+
   override fun onResume(owner: LifecycleOwner) {
     displayRotationHelper.onResume()
   }
 
   override fun onPause(owner: LifecycleOwner) {
     displayRotationHelper.onPause()
-  }
-
-  fun bindView(view: MainActivityView) {
-    this.view = view
-
-    view.scanButton.setOnClickListener {
-      // frame.acquireCameraImage is dependent on an ARCore Frame, which is only available in onDrawFrame.
-      // Use a boolean and check its state in onDrawFrame to interact with the camera image.
-      scanButtonWasPressed = true
-      view.setScanningActive(true)
-      hideSnackbar()
-    }
-
-    view.resetButton.setOnClickListener {
-      arLabeledAnchors.clear()
-      view.resetButton.isEnabled = false
-      hideSnackbar()
-    }
   }
 
   override fun onSurfaceCreated(render: SampleRender) {
@@ -108,44 +113,39 @@ class AppRenderer(val activity: MainActivity) : DefaultLifecycleObserver, Sample
     val session = activity.arCoreSessionHelper.sessionCache ?: return
     session.setCameraTextureNames(intArrayOf(backgroundRenderer.cameraColorTexture.textureId))
 
-    // Notify ARCore session that the view size changed so that the perspective matrix and
-    // the video background can be properly adjusted.
     displayRotationHelper.updateSessionIfNeeded(session)
 
     val frame = try {
       session.update()
+    } catch (e: SessionPausedException) {
+      // The session is pausing, ignore this frame.
+      return
     } catch (e: CameraNotAvailableException) {
       Log.e(TAG, "Camera not available during onDrawFrame", e)
-      showSnackbar("Camera not available. Try restarting the app.")
+      onSnackbarRequested?.invoke("Camera not available. Try restarting the app.")
       return
     }
 
     backgroundRenderer.updateDisplayGeometry(frame)
     backgroundRenderer.drawBackground(render)
 
-    // Get camera and projection matrices.
     val camera = frame.camera
     camera.getViewMatrix(viewMatrix, 0)
     camera.getProjectionMatrix(projectionMatrix, 0, 0.01f, 100.0f)
     Matrix.multiplyMM(viewProjectionMatrix, 0, projectionMatrix, 0, viewMatrix, 0)
 
-    // Handle tracking failures.
     if (camera.trackingState != TrackingState.TRACKING) {
       return
     }
 
-    // Draw point cloud.
     frame.acquirePointCloud().use { pointCloud ->
       pointCloudRender.drawPointCloud(render, pointCloud, viewProjectionMatrix)
     }
 
-    // Frame.acquireCameraImage must be used on the GL thread.
-    // Check if the button was pressed last frame to start processing the camera image.
     if (scanButtonWasPressed) {
       scanButtonWasPressed = false
       val cameraImage = frame.tryAcquireCameraImage()
       if (cameraImage != null) {
-        // Call our ML model on an IO thread.
         launch(Dispatchers.IO) {
           val cameraId = session.cameraConfig.cameraId
           val imageRotation = displayRotationHelper.getCameraSensorToDisplayRotation(cameraId)
@@ -155,7 +155,6 @@ class AppRenderer(val activity: MainActivity) : DefaultLifecycleObserver, Sample
       }
     }
 
-    /** If results were completed this frame, create [Anchor]s from model results. */
     val objects = objectResults
     if (objects != null) {
       objectResults = null
@@ -163,27 +162,24 @@ class AppRenderer(val activity: MainActivity) : DefaultLifecycleObserver, Sample
       val anchors = objects.mapNotNull { obj ->
         val (atX, atY) = obj.centerCoordinate
         val anchor = createAnchor(atX.toFloat(), atY.toFloat(), frame) ?: return@mapNotNull null
-        Log.i(TAG, "Created anchor ${anchor.pose} from hit test")
         ARLabeledAnchor(anchor, obj.label)
       }
       arLabeledAnchors.addAll(anchors)
-      view.post {
-        view.resetButton.isEnabled = arLabeledAnchors.isNotEmpty()
-        view.setScanningActive(false)
+      
+      launch(Dispatchers.Main) {
+        onResetEnabledChanged?.invoke(arLabeledAnchors.isNotEmpty())
+        onScanningStateChanged?.invoke(false)
         when {
           objects.isEmpty() && currentAnalyzer == mlKitAnalyzer && !mlKitAnalyzer.hasCustomModel() ->
-            showSnackbar("Default ML Kit classification model returned no results. " +
-              "For better classification performance, see the README to configure a custom model.")
+            onSnackbarRequested?.invoke("Default ML Kit model returned no results.")
           objects.isEmpty() ->
-            showSnackbar("Classification model returned no results.")
+            onSnackbarRequested?.invoke("Classification model returned no results.")
           anchors.size != objects.size ->
-            showSnackbar("Objects were classified, but could not be attached to an anchor. " +
-              "Try moving your device around to obtain a better understanding of the environment.")
+            onSnackbarRequested?.invoke("Objects classified, but could not be attached to an anchor.")
         }
       }
     }
 
-    // Draw labels at their anchor position.
     for (arDetectedObject in arLabeledAnchors) {
       val anchor = arDetectedObject.anchor
       if (anchor.trackingState != TrackingState.TRACKING) continue
@@ -197,31 +193,16 @@ class AppRenderer(val activity: MainActivity) : DefaultLifecycleObserver, Sample
     }
   }
 
-  /**
-   * Utility method for [Frame.acquireCameraImage] that maps [NotYetAvailableException] to `null`.
-   */
   fun Frame.tryAcquireCameraImage() = try {
     acquireCameraImage()
   } catch (e: NotYetAvailableException) {
     null
-  } catch (e: Throwable) {
-    throw e
   }
 
-  private fun showSnackbar(message: String): Unit =
-    activity.view.snackbarHelper.showError(activity, message)
-
-  private fun hideSnackbar() = activity.view.snackbarHelper.hide(activity)
-
-  /**
-   * Temporary arrays to prevent allocations in [createAnchor].
-   */
   private val convertFloats = FloatArray(4)
   private val convertFloatsOut = FloatArray(4)
 
-  /** Create an anchor using (x, y) coordinates in the [Coordinates2d.IMAGE_PIXELS] coordinate space. */
   fun createAnchor(xImage: Float, yImage: Float, frame: Frame): Anchor? {
-    // IMAGE_PIXELS -> VIEW
     convertFloats[0] = xImage
     convertFloats[1] = yImage
     frame.transformCoordinates2d(
@@ -231,7 +212,6 @@ class AppRenderer(val activity: MainActivity) : DefaultLifecycleObserver, Sample
       convertFloatsOut
     )
 
-    // Conduct a hit test using the VIEW coordinates
     val hits = frame.hitTest(convertFloatsOut[0], convertFloatsOut[1])
     val result = hits.getOrNull(0) ?: return null
     return result.trackable.createAnchor(result.hitPose)

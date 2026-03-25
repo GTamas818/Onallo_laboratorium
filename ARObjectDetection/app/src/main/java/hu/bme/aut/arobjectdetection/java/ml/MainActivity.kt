@@ -19,11 +19,15 @@ package hu.bme.aut.arobjectdetection.java.ml
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
+import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.material3.MaterialTheme
 import com.google.ar.core.CameraConfig
 import com.google.ar.core.CameraConfigFilter
 import com.google.ar.core.Config
 import hu.bme.aut.arobjectdetection.java.common.helpers.FullScreenHelper
+import hu.bme.aut.arobjectdetection.java.ui.navigation.AppNavigation
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.UnavailableApkTooOldException
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException
@@ -35,15 +39,13 @@ import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationExceptio
 class MainActivity : AppCompatActivity() {
   val TAG = "MainActivity"
   lateinit var arCoreSessionHelper: ARCoreSessionLifecycleHelper
-
   lateinit var renderer: AppRenderer
-  lateinit var view: MainActivityView
+  private val viewModel: MainViewModel by viewModels()
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
     arCoreSessionHelper = ARCoreSessionLifecycleHelper(this)
-    // When session creation or session.resume fails, we display a message and log detailed information.
     arCoreSessionHelper.exceptionCallback = { exception ->
       val message = when (exception) {
         is UnavailableArcoreNotInstalledException,
@@ -55,17 +57,17 @@ class MainActivity : AppCompatActivity() {
         else -> "Failed to create AR session: $exception"
       }
       Log.e(TAG, message, exception)
-      Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+      viewModel.showSnackbar(message)
     }
 
     arCoreSessionHelper.beforeSessionResume = { session ->
       session.configure(
         session.config.apply {
-          // To get the best image of the object in question, enable autofocus.
           focusMode = Config.FocusMode.AUTO
           if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
             depthMode = Config.DepthMode.AUTOMATIC
           }
+            //lightEstimationMode = Config.LightEstimationMode.ENVIRONMENTAL_HDR
         }
       )
 
@@ -76,14 +78,28 @@ class MainActivity : AppCompatActivity() {
         .thenByDescending { it.imageSize.height }
       session.cameraConfig = configs.sortedWith(sort)[0]
     }
-    lifecycle.addObserver(arCoreSessionHelper)
 
     renderer = AppRenderer(this)
-    lifecycle.addObserver(renderer)
-    view = MainActivityView(this, renderer)
-    setContentView(view.root)
-    renderer.bindView(view)
-    lifecycle.addObserver(view)
+    
+    // Connect ViewModel to Renderer
+    renderer.setCallbacks(
+      onScanningStateChanged = { viewModel.setScanningActive(it) },
+      onResetEnabledChanged = { viewModel.setResetEnabled(it) },
+      onSnackbarRequested = { viewModel.showSnackbar(it) }
+    )
+    
+    viewModel.setOnScanTriggered { renderer.onScanTriggered() }
+    viewModel.setOnResetTriggered { renderer.onResetTriggered() }
+
+    setContent {
+      MaterialTheme {
+        AppNavigation(
+          renderer = renderer,
+          viewModel = viewModel,
+          arCoreSessionHelper = arCoreSessionHelper
+        )
+      }
+    }
   }
 
   override fun onRequestPermissionsResult(
