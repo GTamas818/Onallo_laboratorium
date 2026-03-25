@@ -1,0 +1,2 @@
+rootProject.name = "AR_Object_Detection"
+include ':app'
