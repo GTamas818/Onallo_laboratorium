@@ -1,0 +1,6 @@
+Postgre
+JavaSpring
+React
+
+Feladat:
+Egy weboldal elkészítése amire "labeleket" lehet feltölteni, majd ezt összekapcsolni a mobil alkalmazással. Azt elérni, hogy ha a modell felismer egy betanított objektumot akkor a weben hozzárendelt "label"-t rajzolja ki az alkalmazás.

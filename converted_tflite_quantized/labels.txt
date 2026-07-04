@@ -1,0 +1,5 @@
+0 Delonghi Inissia
+1 De'Longhi Dedica
+2 Unknown
+3 Lego
+4 Office chair

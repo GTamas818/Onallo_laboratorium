@@ -1,0 +1,93 @@
+package hu.bme.aut.android.landmarkrecognition.data
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.view.Surface
+import hu.bme.aut.android.landmarkrecognition.domain.Classification
+import hu.bme.aut.android.landmarkrecognition.domain.LandmarkClassifier
+import org.tensorflow.lite.task.core.BaseOptions
+import org.tensorflow.lite.task.vision.classifier.ImageClassifier
+import org.tensorflow.lite.support.image.ImageProcessor
+import org.tensorflow.lite.support.image.TensorImage
+import org.tensorflow.lite.task.core.vision.ImageProcessingOptions
+
+class TFLiteLandmarkClassifier(
+    private val context: Context,
+    private val threshold: Float = 0.5f,
+    private val maxResults: Int = 1
+): LandmarkClassifier {
+
+    private var classifier: ImageClassifier? = null
+    private var labels: List<String> = emptyList()
+
+    private fun setupClassifier() {
+        // Load labels from assets if labels.txt exists
+        try {
+            labels = context.assets.open("labels.txt").bufferedReader().useLines { it.toList() }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        val baseOptions = BaseOptions.builder()
+            .setNumThreads(2)
+            .build()
+
+        val options = ImageClassifier.ImageClassifierOptions.builder()
+            .setBaseOptions(baseOptions)
+            .setMaxResults(maxResults)
+            .setScoreThreshold(threshold)
+            .build()
+
+        try {
+            classifier = ImageClassifier.createFromFileAndOptions(
+                context,
+                "landmarks.tflite",
+                options
+            )
+        } catch (e: IllegalStateException) {
+            e.printStackTrace()
+        }
+    }
+
+    override fun classify(bitmap: Bitmap, rotation: Int): List<Classification> {
+        if(classifier == null){
+            setupClassifier()
+        }
+
+        val imageProcessor = ImageProcessor.Builder().build()
+
+        val tensorImage = imageProcessor.process(TensorImage.fromBitmap(bitmap))
+
+        val imageProcessingOptions = ImageProcessingOptions.builder()
+            .setOrientation(getOrientationFromRotation(rotation))
+            .build()
+
+        val result = classifier?.classify(tensorImage, imageProcessingOptions)
+
+        return result?.flatMap { classifications ->
+            classifications.categories.map { category ->
+                // Use labels list if available, otherwise fall back to metadata in the model
+                val name = if (labels.isNotEmpty() && category.index < labels.size) {
+                    labels[category.index]
+                } else {
+                    category.displayName ?: category.label ?: "Unknown"
+                }
+
+                Classification(
+                    name = name,
+                    score = category.score
+                )
+            }
+        }?.distinctBy { it.name } ?: emptyList()
+    }
+
+
+    private fun getOrientationFromRotation(rotation: Int): ImageProcessingOptions.Orientation {
+        return when(rotation) {
+            Surface.ROTATION_270 -> ImageProcessingOptions.Orientation.BOTTOM_RIGHT
+            Surface.ROTATION_90 -> ImageProcessingOptions.Orientation.TOP_LEFT
+            Surface.ROTATION_180 -> ImageProcessingOptions.Orientation.RIGHT_BOTTOM
+            else -> ImageProcessingOptions.Orientation.RIGHT_TOP
+        }
+    }
+}
