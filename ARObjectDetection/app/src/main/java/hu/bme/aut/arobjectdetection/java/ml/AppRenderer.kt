@@ -22,6 +22,7 @@ import androidx.lifecycle.LifecycleOwner
 import com.google.ar.core.Anchor
 import com.google.ar.core.Coordinates2d
 import com.google.ar.core.Frame
+import com.google.ar.core.Pose
 import com.google.ar.core.TrackingState
 import hu.bme.aut.arobjectdetection.java.common.helpers.DisplayRotationHelper
 import hu.bme.aut.arobjectdetection.java.common.samplerender.SampleRender
@@ -30,6 +31,7 @@ import hu.bme.aut.arobjectdetection.java.ml.classification.DetectedObjectResult
 import hu.bme.aut.arobjectdetection.java.ml.classification.MLKitObjectDetector
 import hu.bme.aut.arobjectdetection.java.ml.classification.ObjectDetector
 import hu.bme.aut.arobjectdetection.java.ml.render.LabelRender
+import hu.bme.aut.arobjectdetection.java.ml.render.ObjectRenderer
 import hu.bme.aut.arobjectdetection.java.ml.render.PointCloudRender
 import com.google.ar.core.exceptions.CameraNotAvailableException
 import com.google.ar.core.exceptions.NotYetAvailableException
@@ -52,6 +54,7 @@ class AppRenderer(val activity: MainActivity) : DefaultLifecycleObserver, Sample
   lateinit var backgroundRenderer: BackgroundRenderer
   val pointCloudRender = PointCloudRender()
   val labelRenderer = LabelRender()
+  val objectRenderer = ObjectRenderer()
 
   val viewMatrix = FloatArray(16)
   val projectionMatrix = FloatArray(16)
@@ -101,6 +104,7 @@ class AppRenderer(val activity: MainActivity) : DefaultLifecycleObserver, Sample
     }
     pointCloudRender.onSurfaceCreated(render)
     labelRenderer.onSurfaceCreated(render)
+    objectRenderer.onSurfaceCreated(render, "models/arrow2.obj", "models/arrow2.png")
   }
 
   override fun onSurfaceChanged(render: SampleRender?, width: Int, height: Int) {
@@ -190,6 +194,8 @@ class AppRenderer(val activity: MainActivity) : DefaultLifecycleObserver, Sample
         camera.pose,
         arDetectedObject.label
       )
+      val arrowPose = anchor.pose.compose(Pose.makeTranslation(0f, 0.2f, 0f))
+      objectRenderer.draw(render, viewMatrix, projectionMatrix, arrowPose, 0.05f, 0f, 90f, 0f)
     }
   }
 
